@@ -1,0 +1,114 @@
+# ================================
+# Setup MySQL Connection
+# ================================
+Add-Type -Path "C:\Program Files (x86)\MySQL\Connector.NET 8.0\Assemblies\v4.5.2\MySql.Data.dll"
+
+$MySQLConnectionString = "server=localhost;user=your_mysql_user;password=your_mysql_password;database=crypto_wash_trading;"
+$MySQLConnection = New-Object MySql.Data.MySqlClient.MySqlConnection
+$MySQLConnection.ConnectionString = $MySQLConnectionString
+$MySQLConnection.Open()
+
+function Insert-Trade {
+    param(
+        [int]$ExchangeId,
+        [string]$Symbol,
+        [string]$Side,
+        [decimal]$Price,
+        [decimal]$Quantity,
+        [datetime]$TradeTime,
+        [string]$TraderId,
+        [string]$TxId
+    )
+
+    $Query = @"
+        INSERT INTO trades (exchange_id, symbol, trade_side, price, quantity, trade_time, trader_id, tx_id)
+        VALUES (@exchange_id, @symbol, @trade_side, @price, @quantity, @trade_time, @trader_id, @tx_id)
+"@
+
+    $Command = $MySQLConnection.CreateCommand()
+    $Command.CommandText = $Query
+
+    $Command.Parameters.AddWithValue("@exchange_id", $ExchangeId) | Out-Null
+    $Command.Parameters.AddWithValue("@symbol", $Symbol) | Out-Null
+    $Command.Parameters.AddWithValue("@trade_side", $Side) | Out-Null
+    $Command.Parameters.AddWithValue("@price", $Price) | Out-Null
+    $Command.Parameters.AddWithValue("@quantity", $Quantity) | Out-Null
+    $Command.Parameters.AddWithValue("@trade_time", $TradeTime) | Out-Null
+    $Command.Parameters.AddWithValue("@trader_id", $TraderId) | Out-Null
+    $Command.Parameters.AddWithValue("@tx_id", $TxId) | Out-Null
+
+    $Command.ExecuteNonQuery() | Out-Null
+}
+
+# ================================
+# Fetch Binance Trades
+# ================================
+function Get-BinanceTrades {
+    param([string]$Symbol = "XRPUSDT", [int]$Limit = 10)
+
+    $url = "https://api.binance.com/api/v3/trades?symbol=$Symbol&limit=$Limit"
+    $response = Invoke-RestMethod -Uri $url -Method Get
+
+    foreach ($t in $response) {
+        $side = if ($t.isBuyerMaker -eq $false) { "buy" } else { "sell" }
+        $tradeTime = [System.DateTimeOffset]::FromUnixTimeMilliseconds($t.time).DateTime
+
+        Insert-Trade -ExchangeId 1 -Symbol $Symbol -Side $side `
+            -Price $t.price -Quantity $t.qty -TradeTime $tradeTime `
+            -TraderId $null -TxId $t.id
+    }
+}
+
+# ================================
+# Fetch Coinbase Trades
+# ================================
+function Get-CoinbaseTrades {
+    param([string]$Symbol = "XRP-USD", [int]$Limit = 10)
+
+    $url = "https://api.exchange.coinbase.com/products/$Symbol/trades"
+    $response = Invoke-RestMethod -Uri $url -Method Get
+
+    foreach ($t in $response | Select-Object -First $Limit) {
+        $tradeTime = [datetime]::Parse($t.time)
+
+        Insert-Trade -ExchangeId 2 -Symbol $Symbol -Side $t.side `
+            -Price $t.price -Quantity $t.size -TradeTime $tradeTime `
+            -TraderId $null -TxId $t.trade_id
+    }
+}
+
+# ================================
+# Fetch Kraken Trades
+# ================================
+function Get-KrakenTrades {
+    param([string]$Symbol = "XXRPZUSD", [int]$Limit = 10)
+
+    $url = "https://api.kraken.com/0/public/Trades?pair=$Symbol"
+    $response = Invoke-RestMethod -Uri $url -Method Get
+    $trades = $response.result.$Symbol
+
+    foreach ($t in $trades | Select-Object -First $Limit) {
+        $side = if ($t[3] -eq "b") { "buy" } else { "sell" }
+        $tradeTime = [System.DateTimeOffset]::FromUnixTimeSeconds($t[2]).DateTime
+
+        Insert-Trade -ExchangeId 3 -Symbol $Symbol -Side $side `
+            -Price $t[0] -Quantity $t[1] -TradeTime $tradeTime `
+            -TraderId $null -TxId $null
+    }
+}
+
+# ================================
+# Run Collectors
+# ================================
+Write-Output "Fetching Binance trades..."
+Get-BinanceTrades
+
+Write-Output "Fetching Coinbase trades..."
+Get-CoinbaseTrades
+
+Write-Output "Fetching Kraken trades..."
+Get-KrakenTrades
+
+Write-Output "All trades inserted into MySQL."
+
+$MySQLConnection.Close()

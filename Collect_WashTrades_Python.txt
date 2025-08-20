@@ -1,0 +1,96 @@
+import requests
+import mysql.connector
+from datetime import datetime
+
+# ----------------------
+# MySQL Connection Setup
+# ----------------------
+db = mysql.connector.connect(
+    host="localhost",
+    user="your_mysql_user",
+    password="your_mysql_password",
+    database="crypto_wash_trading"
+)
+cursor = db.cursor()
+
+# ----------------------
+# Helper: Insert trade
+# ----------------------
+def insert_trade(exchange_id, symbol, side, price, qty, trade_time, trader_id, tx_id):
+    sql = """
+        INSERT INTO trades (exchange_id, symbol, trade_side, price, quantity, trade_time, trader_id, tx_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    values = (exchange_id, symbol, side, price, qty, trade_time, trader_id, tx_id)
+    cursor.execute(sql, values)
+    db.commit()
+
+# ----------------------
+# Binance Trades
+# ----------------------
+def fetch_binance(symbol="XRPUSDT", limit=10):
+    url = f"https://api.binance.com/api/v3/trades?symbol={symbol}&limit={limit}"
+    r = requests.get(url).json()
+    for t in r:
+        insert_trade(
+            exchange_id=1,  # Binance
+            symbol=symbol,
+            side="buy" if t["isBuyerMaker"] == False else "sell", # Approx
+            price=float(t["price"]),
+            qty=float(t["qty"]),
+            trade_time=datetime.fromtimestamp(t["time"]/1000),
+            trader_id=None, # Binance doesn't expose trader IDs
+            tx_id=str(t["id"])
+        )
+
+# ----------------------
+# Coinbase Trades
+# ----------------------
+def fetch_coinbase(symbol="XRP-USD", limit=10):
+    url = f"https://api.exchange.coinbase.com/products/{symbol}/trades"
+    r = requests.get(url).json()
+    for t in r[:limit]:
+        insert_trade(
+            exchange_id=2,  # Coinbase
+            symbol=symbol,
+            side=t["side"],
+            price=float(t["price"]),
+            qty=float(t["size"]),
+            trade_time=datetime.fromisoformat(t["time"].replace("Z", "+00:00")),
+            trader_id=None,
+            tx_id=str(t["trade_id"])
+        )
+
+# ----------------------
+# Kraken Trades
+# ----------------------
+def fetch_kraken(symbol="XXRPZUSD", limit=10):
+    url = f"https://api.kraken.com/0/public/Trades?pair={symbol}"
+    r = requests.get(url).json()
+    trades = r["result"][symbol]
+    for t in trades[:limit]:
+        insert_trade(
+            exchange_id=3,  # Kraken
+            symbol=symbol,
+            side="buy" if t[3] == "b" else "sell",
+            price=float(t[0]),
+            qty=float(t[1]),
+            trade_time=datetime.fromtimestamp(t[2]),
+            trader_id=None,
+            tx_id=None # Kraken doesn't provide tx id in public API
+        )
+
+# ----------------------
+# Main runner
+# ----------------------
+if __name__ == "__main__":
+    print("Fetching Binance trades...")
+    fetch_binance()
+
+    print("Fetching Coinbase trades...")
+    fetch_coinbase()
+
+    print("Fetching Kraken trades...")
+    fetch_kraken()
+
+    print("All trades inserted into MySQL.")

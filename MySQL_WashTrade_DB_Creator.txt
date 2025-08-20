@@ -1,0 +1,67 @@
+-- Create database
+CREATE DATABASE IF NOT EXISTS crypto_wash_trading;
+USE crypto_wash_trading;
+
+-- Table for exchanges
+CREATE TABLE exchanges (
+    exchange_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE
+);
+
+-- Insert supported exchanges
+INSERT IGNORE INTO exchanges (name) VALUES ('Binance'), ('Coinbase'), ('Kraken');
+
+-- Table for raw trades
+CREATE TABLE trades (
+    trade_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    exchange_id INT NOT NULL,
+    symbol VARCHAR(20) NOT NULL,         -- e.g., BTCUSDT, XRPUSD
+    trade_side ENUM('buy','sell') NOT NULL,
+    price DECIMAL(20,8) NOT NULL,
+    quantity DECIMAL(20,8) NOT NULL,
+    trade_time DATETIME NOT NULL,
+    trader_id VARCHAR(100),              -- anonymized user/account if available
+    tx_id VARCHAR(100),                  -- exchange transaction id
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (exchange_id) REFERENCES exchanges(exchange_id)
+);
+
+-- Table for detected wash trades
+CREATE TABLE wash_trades (
+    wash_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trade_id BIGINT NOT NULL,
+    reason VARCHAR(255) NOT NULL,
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (trade_id) REFERENCES trades(trade_id)
+);
+
+-- Stored procedure to detect wash trades
+DELIMITER //
+CREATE PROCEDURE detect_wash_trades()
+BEGIN
+    /*
+      Simple heuristic:
+      - Same trader_id
+      - Same symbol
+      - Opposite buy/sell within 1 minute
+      - Similar price (±0.5%)
+      - Similar quantity
+    */
+    INSERT INTO wash_trades (trade_id, reason)
+    SELECT t1.trade_id, CONCAT('Potential wash trade with trade_id=', t2.trade_id)
+    FROM trades t1
+    JOIN trades t2 
+      ON t1.trader_id = t2.trader_id
+     AND t1.symbol = t2.symbol
+     AND t1.trade_side <> t2.trade_side
+     AND ABS(TIMESTAMPDIFF(SECOND, t1.trade_time, t2.trade_time)) <= 60
+     AND ABS(t1.price - t2.price) / t1.price <= 0.005
+     AND ABS(t1.quantity - t2.quantity) <= 0.0001
+    WHERE NOT EXISTS (
+        SELECT 1 FROM wash_trades wt WHERE wt.trade_id = t1.trade_id
+    );
+END //
+DELIMITER ;
+
+-- Example call:
+-- CALL detect_wash_trades();
